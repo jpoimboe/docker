@@ -1581,6 +1581,7 @@ func TestOnlyLoopbackExistsWhenUsingDisableNetworkOption(t *testing.T) {
 }
 
 func TestPrivilegedCanMknod(t *testing.T) {
+	t.Skip("FIXME: libvirt-lxc doesn't support CAP_MKNOD, see https://bugzilla.redhat.com/show_bug.cgi?id=1029070")
 	eng := NewTestEngine(t)
 	runtime := mkRuntimeFromEngine(eng, t)
 	defer runtime.Nuke()

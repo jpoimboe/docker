@@ -68,6 +68,28 @@ ENV	DOCKER_CROSSPLATFORMS	darwin/amd64 darwin/386
 # TODO add linux/386 and linux/arm
 RUN	cd /usr/local/go/src && bash -xc 'for platform in $DOCKER_CROSSPLATFORMS; do GOOS=${platform%/*} GOARCH=${platform##*/} ./make.bash --no-clean 2>&1; done'
 
+# libvirt - use libvirt from 12.10 because the 12.04 version requires dbus daemon
+RUN     echo 'deb http://archive.ubuntu.com/ubuntu quantal main universe' >> /etc/apt/sources.list
+RUN     echo 'APT::Default-Release "precise";' > /etc/apt/apt.conf.d/01ubuntu
+RUN     /bin/echo -e 'Package: libvirt*\nPin: release n=quantal\nPin-Priority: 990' > /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libnl-3-200\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libnuma1\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libyajl2\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: *\nPin: release n=precise\nPin-Priority: 900' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: *\nPin: release o=Ubuntu\nPin-Priority: -10' >> /etc/apt/preferences
+RUN     apt-get update
+RUN     apt-get install -y -q libvirt-dev
+RUN     /bin/echo -e '\nPackage: libnl-route-3-200\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     apt-get install -y -q libvirt-bin
+
+# libvirtd hacks
+RUN     mkdir -p /dev/net
+#RUN     mknod /dev/net/tun c 10 200
+RUN     mkdir -p /usr/libexec
+RUN     ln -s /usr/lib/libvirt/libvirt_lxc /usr/libexec/libvirt_lxc
+RUN     echo 'libvirt-dnsmasq:x:1000:1000::/data:/bin/sh' >> /etc/passwd
+RUN     echo 'libvirt-qemu:x:1001:1001::/data:/bin/sh' >> /etc/passwd
+
 # Grab Go's cover tool for dead-simple code coverage testing
 RUN	go get code.google.com/p/go.tools/cmd/cover
 
