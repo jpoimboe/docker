@@ -9,9 +9,9 @@ import (
 	"github.com/dotcloud/docker/graphdriver"
 	"github.com/dotcloud/docker/mount"
 	"github.com/dotcloud/docker/pkg/term"
+	"github.com/dotcloud/docker/rpcfd"
 	"github.com/dotcloud/docker/sysinit"
 	"github.com/dotcloud/docker/utils"
-	"github.com/kr/pty"
 	"io"
 	"io/ioutil"
 	"log"
@@ -62,7 +62,8 @@ type Container struct {
 	stderr    *utils.WriteBroadcaster
 	stdin     io.ReadCloser
 	stdinPipe io.WriteCloser
-	ptyMaster io.Closer
+	ptyMaster *os.File
+	ptyLock   chan struct{}
 
 	runtime *Runtime
 
@@ -75,7 +76,7 @@ type Container struct {
 
 	activeLinks map[string]*Link
 
-	dockerInitRpcSocket net.Conn // needed to prevent rpc FD leak bug
+	dockerInitRpcSocket *net.UnixConn // needed to prevent rpc FD leak bug
 	dockerInitRpc       *rpc.Client
 	rpcLock             chan struct{}
 }
@@ -320,59 +321,6 @@ func (container *Container) generateLXCConfig() error {
 	return LxcTemplateCompiled.Execute(fo, container)
 }
 
-func (container *Container) startPty() error {
-	ptyMaster, ptySlave, err := pty.Open()
-	if err != nil {
-		return err
-	}
-	container.ptyMaster = ptyMaster
-	container.cmd.Stdout = ptySlave
-	container.cmd.Stderr = ptySlave
-
-	// Copy the PTYs to our broadcasters
-	go func() {
-		defer container.stdout.CloseWriters()
-		utils.Debugf("startPty: begin of stdout pipe")
-		io.Copy(container.stdout, ptyMaster)
-		utils.Debugf("startPty: end of stdout pipe")
-	}()
-
-	// stdin
-	if container.Config.OpenStdin {
-		container.cmd.Stdin = ptySlave
-		container.cmd.SysProcAttr.Setctty = true
-		go func() {
-			defer container.stdin.Close()
-			utils.Debugf("startPty: begin of stdin pipe")
-			io.Copy(ptyMaster, container.stdin)
-			utils.Debugf("startPty: end of stdin pipe")
-		}()
-	}
-	if err := container.cmd.Start(); err != nil {
-		return err
-	}
-	ptySlave.Close()
-	return nil
-}
-
-func (container *Container) start() error {
-	container.cmd.Stdout = container.stdout
-	container.cmd.Stderr = container.stderr
-	if container.Config.OpenStdin {
-		stdin, err := container.cmd.StdinPipe()
-		if err != nil {
-			return err
-		}
-		go func() {
-			defer stdin.Close()
-			utils.Debugf("start: begin of stdin pipe")
-			io.Copy(stdin, container.stdin)
-			utils.Debugf("start: end of stdin pipe")
-		}()
-	}
-	return container.cmd.Start()
-}
-
 func (container *Container) Attach(stdin io.ReadCloser, stdinCloser io.Closer, stdout io.Writer, stderr io.Writer) chan error {
 	var cStdout, cStderr io.ReadCloser
 
@@ -606,6 +554,11 @@ func (container *Container) Start() (err error) {
 
 	if container.Config.Tty {
 		env = append(env, "TERM=xterm")
+		params = append(params, "-tty")
+	}
+
+	if container.Config.OpenStdin {
+		params = append(params, "-stdin")
 	}
 
 	if container.hostConfig.Privileged {
@@ -746,12 +699,13 @@ func (container *Container) Start() (err error) {
 
 	container.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if container.Config.Tty {
-		err = container.startPty()
-	} else {
-		err = container.start()
-	}
-	if err != nil {
+	// Hook up stdout and stderr to the cmd so that any early error output
+	// that might occur (before hooking up the console FDs) gets logged
+	container.cmd.Stdout = container.stdout
+	container.cmd.Stderr = container.stderr
+
+	// Start it
+	if err := container.cmd.Start(); err != nil {
 		return err
 	}
 
@@ -762,6 +716,7 @@ func (container *Container) Start() (err error) {
 	// Init the locks
 	container.waitLock = make(chan struct{})
 	container.rpcLock = make(chan struct{})
+	container.ptyLock = make(chan struct{})
 
 	container.ToDisk()
 	go container.monitor(false)
@@ -819,7 +774,7 @@ func (container *Container) dockerInitRpcCall(method string, args, reply interfa
 	return nil
 }
 
-// Connect to the dockerinit RPC socket
+// Connect to the dockerinit RPC socket and hook up the console FDs
 func (container *Container) connectToDockerInit(reconnect bool) error {
 
 	// We can't connect to the dockerinit RPC socket file directly because
@@ -828,12 +783,15 @@ func (container *Container) connectToDockerInit(reconnect bool) error {
 	symlink := "/tmp/docker-rpc." + container.ID
 	os.Symlink(path.Join(container.socketPath(), sysinit.RpcSocketName), symlink)
 	defer os.Remove(symlink)
+	address, err := net.ResolveUnixAddr("unix", symlink)
+	if err != nil {
+		return err
+	}
 
 	// Connect to the dockerinit RPC socket with a 1 second timeout
-	var err error
 	for startTime := time.Now(); time.Since(startTime) < time.Second; time.Sleep(10 * time.Millisecond) {
-		if container.dockerInitRpcSocket, err = net.Dial("unix", symlink); err == nil {
-			container.dockerInitRpc = rpc.NewClient(container.dockerInitRpcSocket)
+		if container.dockerInitRpcSocket, err = net.DialUnix("unix", nil, address); err == nil {
+			container.dockerInitRpc = rpcfd.NewClient(container.dockerInitRpcSocket)
 			break
 		}
 
@@ -847,6 +805,67 @@ func (container *Container) connectToDockerInit(reconnect bool) error {
 	}
 
 	close(container.rpcLock)
+
+	// Get the console FDs
+	if container.Config.Tty {
+		var dummy int
+		var rpcFd rpcfd.RpcFd
+		if err := container.dockerInitRpcCall("PtyMaster", &dummy, &rpcFd); err != nil {
+			return err
+		}
+
+		container.ptyMaster = os.NewFile(rpcFd.Fd, "ptyMaster")
+		close(container.ptyLock)
+
+		if container.Config.OpenStdin {
+			go func() {
+				io.Copy(container.ptyMaster, container.stdin)
+				container.ptyMaster.Close()
+			}()
+		}
+
+		go func() {
+			io.Copy(container.stdout, container.ptyMaster)
+			container.ptyMaster.Close()
+		}()
+	} else {
+		var dummy int
+		var rpcFd rpcfd.RpcFd
+
+		if err := container.dockerInitRpcCall("Stdout", &dummy, &rpcFd); err != nil {
+			return err
+		}
+		stdout := os.NewFile(rpcFd.Fd, "stdout")
+		go func() {
+			io.Copy(container.stdout, stdout)
+			stdout.Close()
+		}()
+
+		if err := container.dockerInitRpcCall("Stderr", &dummy, &rpcFd); err != nil {
+			return err
+		}
+		stderr := os.NewFile(rpcFd.Fd, "stderr")
+		go func() {
+			io.Copy(container.stderr, stderr)
+			stderr.Close()
+		}()
+
+		if container.Config.OpenStdin {
+			if err := container.dockerInitRpcCall("Stdin", &dummy, &rpcFd); err != nil {
+				return err
+			}
+			stdin := os.NewFile(rpcFd.Fd, "stdin")
+			go func() {
+				io.Copy(stdin, container.stdin)
+				stdin.Close()
+			}()
+
+			var dummy2 int
+			if err := container.dockerInitRpcCall("StdinClose", &dummy, &dummy2); err != nil {
+				return err
+			}
+		}
+	}
 
 	if !reconnect {
 		// Tell dockerinit to start the app now
@@ -1236,7 +1255,7 @@ func (container *Container) monitor(reconnect bool) {
 
 	// Connect to the dockerinit socket and wait for the exit code
 	if err := container.connectToDockerInit(reconnect); err != nil {
-		utils.Debugf("monitor: couldn't connect to dockerinit in container %s: %s", container.ID, err)
+		utils.Errorf("monitor: couldn't connect to dockerinit in container %s: %s", container.ID, err)
 	} else {
 
 		utils.Debugf("monitor: waiting for container %s", container.ID)
@@ -1426,11 +1445,12 @@ func (container *Container) Wait() int {
 }
 
 func (container *Container) Resize(h, w int) error {
-	pty, ok := container.ptyMaster.(*os.File)
-	if !ok {
-		return fmt.Errorf("ptyMaster does not have Fd() method")
+	select {
+	case <-container.ptyLock:
+	case <-time.After(time.Second):
+		return fmt.Errorf("timeout waiting for pty lock")
 	}
-	return term.SetWinsize(pty.Fd(), &term.Winsize{Height: uint16(h), Width: uint16(w)})
+	return term.SetWinsize(container.ptyMaster.Fd(), &term.Winsize{Height: uint16(h), Width: uint16(w)})
 }
 
 func (container *Container) ExportRw() (archive.Archive, error) {
@@ -1640,11 +1660,9 @@ func (container *Container) Exposes(p Port) bool {
 }
 
 func (container *Container) GetPtyMaster() (*os.File, error) {
+	<-container.ptyLock
 	if container.ptyMaster == nil {
 		return nil, ErrNoTTY
 	}
-	if pty, ok := container.ptyMaster.(*os.File); ok {
-		return pty, nil
-	}
-	return nil, ErrNotATTY
+	return container.ptyMaster, nil
 }

@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/dotcloud/docker/pkg/netlink"
+	"github.com/dotcloud/docker/rpcfd"
 	"github.com/dotcloud/docker/utils"
+	"github.com/kr/pty"
 	"github.com/syndtr/gocapability/capability"
 	"io/ioutil"
 	"log"
@@ -26,6 +28,8 @@ type DockerInitArgs struct {
 	ip         string
 	workDir    string
 	privileged bool
+	tty        bool
+	openStdin  bool
 	env        []string
 	args       []string
 	mtu        int
@@ -44,6 +48,61 @@ type DockerInitRpc struct {
 	exitCode    chan int
 	process     *os.Process
 	processLock chan struct{}
+
+	openStdin bool
+	stdin     *os.File
+	stdout    *os.File
+	stderr    *os.File
+	ptyMaster *os.File
+}
+
+// RPC: Pass pty master FD
+func (dockerInitRpc *DockerInitRpc) PtyMaster(_ int, rpcFd *rpcfd.RpcFd) error {
+	if dockerInitRpc.ptyMaster == nil {
+		return fmt.Errorf("ptyMaster is nil")
+	}
+	rpcFd.Fd = dockerInitRpc.ptyMaster.Fd()
+	return nil
+}
+
+// RPC: Pass stdout FD
+func (dockerInitRpc *DockerInitRpc) Stdout(_ int, rpcFd *rpcfd.RpcFd) error {
+	if dockerInitRpc.stdout == nil {
+		return fmt.Errorf("stdout is nil")
+	}
+	rpcFd.Fd = dockerInitRpc.stdout.Fd()
+	return nil
+}
+
+// RPC: Pass stderr FD
+func (dockerInitRpc *DockerInitRpc) Stderr(_ int, rpcFd *rpcfd.RpcFd) error {
+	if dockerInitRpc.stderr == nil {
+		return fmt.Errorf("stderr is nil")
+	}
+	rpcFd.Fd = dockerInitRpc.stderr.Fd()
+	return nil
+}
+
+// RPC: Pass stdin FD
+func (dockerInitRpc *DockerInitRpc) Stdin(_ int, rpcFd *rpcfd.RpcFd) error {
+	if dockerInitRpc.stdin == nil {
+		return fmt.Errorf("stdin is nil")
+	}
+	rpcFd.Fd = dockerInitRpc.stdin.Fd()
+	return nil
+}
+
+// RPC: For StdinOnce mode, allow docker to close dockerinit's reference to
+// stdin so that docker can close it later
+//
+// FIXME: is StdinOnce mode obsolete now that dockerinit can keep stdin open?
+func (dockerInitRpc *DockerInitRpc) StdinClose(_ int, _ *int) error {
+	if dockerInitRpc.stdin == nil {
+		return fmt.Errorf("stdin is nil")
+	}
+	dockerInitRpc.stdin.Close()
+	dockerInitRpc.stdin = nil
+	return nil
 }
 
 // RPC: Resume container start or container exit
@@ -89,13 +148,13 @@ func rpcServer(dockerInitRpc *DockerInitRpc) {
 	}
 
 	for {
-		conn, err := listener.Accept()
+		conn, err := listener.AcceptUnix()
 		if err != nil {
 			log.Printf("rpc socket accept error: %s", err)
 			continue
 		}
 
-		rpc.ServeConn(conn)
+		rpcfd.ServeConn(conn)
 
 		conn.Close()
 
@@ -244,8 +303,9 @@ func getCmdPath(args *DockerInitArgs) (string, error) {
 	return cmdPath, nil
 }
 
-// Start the RPC server and wait for docker to tell us to
-// resume starting the container.
+// Start the RPC server and wait for docker to tell us to resume starting the
+// container.  This gives docker a chance to get the console FDs before we
+// start so that it won't miss any console output.
 func startServerAndWait(dockerInitRpc *DockerInitRpc) error {
 
 	go rpcServer(dockerInitRpc)
@@ -260,12 +320,13 @@ func startServerAndWait(dockerInitRpc *DockerInitRpc) error {
 	return nil
 }
 
-func dockerInitRpcNew() *DockerInitRpc {
+func dockerInitRpcNew(args *DockerInitArgs) *DockerInitRpc {
 	return &DockerInitRpc{
 		resume:      make(chan int),
 		exitCode:    make(chan int),
 		cancel:      make(chan int),
 		processLock: make(chan struct{}),
+		openStdin:   args.openStdin,
 	}
 }
 
@@ -282,12 +343,53 @@ func dockerInitApp(args *DockerInitArgs) error {
 	cmd := exec.Command(cmdPath, args.args[1:]...)
 	cmd.Dir = args.workDir
 	cmd.Env = args.env
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	// App runs in its own session
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	// Console setup.  Hook up the container app's stdin/stdout/stderr to
+	// either a pty or pipes.  The FDs for the controlling side of the
+	// pty/pipes will be passed to docker later via rpc.
+	dockerInitRpc := dockerInitRpcNew(args)
+	if args.tty {
+		ptyMaster, ptySlave, err := pty.Open()
+		if err != nil {
+			return err
+		}
+		dockerInitRpc.ptyMaster = ptyMaster
+		cmd.Stdout = ptySlave
+		cmd.Stderr = ptySlave
+		if args.openStdin {
+			cmd.Stdin = ptySlave
+			cmd.SysProcAttr.Setctty = true
+		}
+	} else {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		dockerInitRpc.stdout = stdout.(*os.File)
+
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
+		dockerInitRpc.stderr = stderr.(*os.File)
+		if args.openStdin {
+			// Can't use cmd.StdinPipe() here, since in Go 1.2 it
+			// returns an io.WriteCloser with the underlying object
+			// being an *exec.closeOnce, neither of which provides
+			// a way to convert to an FD.
+			pipeRead, pipeWrite, err := os.Pipe()
+			if err != nil {
+				return err
+			}
+			cmd.Stdin = pipeRead
+			dockerInitRpc.stdin = pipeWrite
+		}
+	}
 
 	// Start the RPC server and wait for the resume call from docker
-	dockerInitRpc := dockerInitRpcNew()
 	if err := startServerAndWait(dockerInitRpc); err != nil {
 		return err
 	}
@@ -309,7 +411,7 @@ func dockerInitApp(args *DockerInitArgs) error {
 	if err != nil {
 		return err
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
+	cmd.SysProcAttr.Credential = credential
 
 	// Start the app
 	if err := cmd.Start(); err != nil {
@@ -379,6 +481,8 @@ func SysInit() {
 	ip := flag.String("i", "", "ip address")
 	workDir := flag.String("w", "", "workdir")
 	privileged := flag.Bool("privileged", false, "privileged mode")
+	tty := flag.Bool("tty", false, "use pseudo-tty")
+	openStdin := flag.Bool("stdin", false, "open stdin")
 	mtu := flag.Int("mtu", 1500, "interface mtu")
 	flag.Parse()
 
@@ -401,6 +505,8 @@ func SysInit() {
 		ip:         *ip,
 		workDir:    *workDir,
 		privileged: *privileged,
+		tty:        *tty,
+		openStdin:  *openStdin,
 		env:        env,
 		args:       flag.Args(),
 		mtu:        *mtu,
