@@ -12,6 +12,11 @@ type ContainerPlugin interface {
 	Processes(id string) ([]int, error)
 }
 
+type NetworkPlugin interface {
+	CreateBridge(bridge, address string) error
+	DefaultBridge() string
+}
+
 type ContainerConfig struct {
 	ID string
 

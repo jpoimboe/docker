@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/dotcloud/docker/iptables"
 	"github.com/dotcloud/docker/netlink"
+	"github.com/dotcloud/docker/plugin"
 	"github.com/dotcloud/docker/proxy"
 	"github.com/dotcloud/docker/utils"
 	"log"
@@ -15,7 +16,6 @@ import (
 )
 
 const (
-	DefaultNetworkBridge = "docker0"
 	DisableNetworkBridge = "none"
 	portRangeStart       = 49153
 	portRangeEnd         = 65535
@@ -94,7 +94,7 @@ func checkNameserverOverlaps(nameservers []string, dockerNetwork *net.IPNet) err
 // CreateBridgeIface creates a network bridge interface on the host system with the name `ifaceName`,
 // and attempts to configure it with an address which doesn't conflict with any other interface on the host.
 // If it can't find an address which doesn't conflict, it will return an error.
-func CreateBridgeIface(config *DaemonConfig) error {
+func CreateBridgeIface(config *DaemonConfig, networkPlugin plugin.NetworkPlugin) error {
 	addrs := []string{
 		// Here we don't follow the convention of using the 1st IP of the range for the gateway.
 		// This is to use the same gateway IPs as the /24 ranges, which predate the /16 ranges.
@@ -149,22 +149,9 @@ func CreateBridgeIface(config *DaemonConfig) error {
 	}
 	utils.Debugf("Creating bridge %s with network %s", config.BridgeIface, ifaceAddr)
 
-	if err := netlink.NetworkLinkAdd(config.BridgeIface, "bridge"); err != nil {
-		return fmt.Errorf("Error creating bridge: %s", err)
-	}
-	iface, err := net.InterfaceByName(config.BridgeIface)
+	err := networkPlugin.CreateBridge(config.BridgeIface, ifaceAddr)
 	if err != nil {
 		return err
-	}
-	ipAddr, ipNet, err := net.ParseCIDR(ifaceAddr)
-	if err != nil {
-		return err
-	}
-	if netlink.NetworkLinkAddIp(iface, ipAddr, ipNet); err != nil {
-		return fmt.Errorf("Unable to add private network: %s", err)
-	}
-	if err := netlink.NetworkLinkUp(iface); err != nil {
-		return fmt.Errorf("Unable to start network bridge: %s", err)
 	}
 
 	if config.EnableIptables {
@@ -676,7 +663,7 @@ func (manager *NetworkManager) Close() error {
 	return err3
 }
 
-func newNetworkManager(config *DaemonConfig) (*NetworkManager, error) {
+func newNetworkManager(config *DaemonConfig, plugin plugin.NetworkPlugin) (*NetworkManager, error) {
 	if config.BridgeIface == DisableNetworkBridge {
 		manager := &NetworkManager{
 			disabled: true,
@@ -687,7 +674,7 @@ func newNetworkManager(config *DaemonConfig) (*NetworkManager, error) {
 	addr, err := getIfaceAddr(config.BridgeIface)
 	if err != nil {
 		// If the iface is not found, try to create it
-		if err := CreateBridgeIface(config); err != nil {
+		if err := CreateBridgeIface(config, plugin); err != nil {
 			return nil, err
 		}
 		addr, err = getIfaceAddr(config.BridgeIface)

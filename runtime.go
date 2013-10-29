@@ -13,6 +13,7 @@ import (
 	_ "github.com/dotcloud/docker/graphdriver/vfs"
 	"github.com/dotcloud/docker/plugin"
 	"github.com/dotcloud/docker/plugin/lxc"
+	"github.com/dotcloud/docker/plugin/dockernet"
 	"github.com/dotcloud/docker/utils"
 	"io"
 	"io/ioutil"
@@ -678,10 +679,17 @@ func NewRuntimeFromDirectory(config *DaemonConfig) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't create Tag store: %s", err)
 	}
-	if config.BridgeIface == "" {
-		config.BridgeIface = DefaultNetworkBridge
+
+	containerPlugin, networkPlugin, err := newPlugins()
+	if err != nil {
+		return nil, err
 	}
-	netManager, err := newNetworkManager(config)
+
+	if config.BridgeIface == "" {
+		config.BridgeIface = networkPlugin.DefaultBridge()
+	}
+
+	netManager, err := newNetworkManager(config, networkPlugin)
 	if err != nil {
 		return nil, err
 	}
@@ -724,11 +732,6 @@ func NewRuntimeFromDirectory(config *DaemonConfig) (*Runtime, error) {
 		}
 	}
 
-	containerPlugin, err := newContainerPlugin()
-	if err != nil {
-		return nil, err
-	}
-
 	runtime := &Runtime{
 		repository:      runtimeRepo,
 		containers:      list.New(),
@@ -751,17 +754,24 @@ func NewRuntimeFromDirectory(config *DaemonConfig) (*Runtime, error) {
 	return runtime, nil
 }
 
-func newContainerPlugin() (plugin.ContainerPlugin, error) {
+func newPlugins() (plugin.ContainerPlugin, plugin.NetworkPlugin, error) {
 
 	var containerPlugin plugin.ContainerPlugin
+	var networkPlugin plugin.NetworkPlugin
+
 	containerPlugin, err := lxc.NewContainerPlugin()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	utils.Debugf("Using lxc container plugin")
 
-	return containerPlugin, nil
+	networkPlugin, err = dockernet.NewNetworkPlugin()
+	if err != nil {
+		return nil, nil, err
+	}
+	utils.Debugf("Using dockernet network plugin")
+
+	return containerPlugin, networkPlugin, nil
 }
 
 func (runtime *Runtime) Close() error {
