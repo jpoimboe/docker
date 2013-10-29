@@ -196,6 +196,9 @@ func setupNetworking(args *DockerInitArgs) error {
 		if err != nil {
 			return fmt.Errorf("Unable to set up networking: %v", err)
 		}
+	} else {
+		// FIXME: libvirt hack
+		exec.Command("ip", "link", "delete", "eth0").Run()
 	}
 	if args.gateway != "" {
 		gw := net.ParseIP(args.gateway)
@@ -326,6 +329,10 @@ func setupCgroups(args *DockerInitArgs) error {
 }
 
 func setupCommon(args *DockerInitArgs) error {
+
+	// FIXME: Workaround for libvirt "/.oldroot" directory leak
+	// https://bugzilla.redhat.com/show_bug.cgi?id=1026814
+	os.Remove("/.oldroot")
 
 	err := setupHostname(args)
 	if err != nil {

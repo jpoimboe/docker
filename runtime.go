@@ -12,8 +12,9 @@ import (
 	_ "github.com/dotcloud/docker/graphdriver/devmapper"
 	_ "github.com/dotcloud/docker/graphdriver/vfs"
 	"github.com/dotcloud/docker/plugin"
-	"github.com/dotcloud/docker/plugin/lxc"
 	"github.com/dotcloud/docker/plugin/dockernet"
+	"github.com/dotcloud/docker/plugin/libvirt"
+	"github.com/dotcloud/docker/plugin/lxc"
 	"github.com/dotcloud/docker/utils"
 	"io"
 	"io/ioutil"
@@ -759,17 +760,32 @@ func newPlugins() (plugin.ContainerPlugin, plugin.NetworkPlugin, error) {
 	var containerPlugin plugin.ContainerPlugin
 	var networkPlugin plugin.NetworkPlugin
 
-	containerPlugin, err := lxc.NewContainerPlugin()
-	if err != nil {
-		return nil, nil, err
-	}
-	utils.Debugf("Using lxc container plugin")
+	// Use libvirt as the default network+container plugin and
+	// lxc+dockernet as the fallback option
+	containerPlugin, err := libvirt.NewContainerPlugin()
+	if err == nil {
+		// libvirt
+		utils.Debugf("Using libvirt container plugin")
 
-	networkPlugin, err = dockernet.NewNetworkPlugin()
-	if err != nil {
-		return nil, nil, err
+		networkPlugin, err = libvirt.NewNetworkPlugin()
+		if err != nil {
+			return nil, nil, err
+		}
+		utils.Debugf("Using libvirt network plugin")
+	} else {
+		// LXC
+		containerPlugin, err = lxc.NewContainerPlugin()
+		if err != nil {
+			return nil, nil, fmt.Errorf("Can't find libvirt or lxc tools")
+		}
+		utils.Debugf("Using lxc container plugin")
+
+		networkPlugin, err = dockernet.NewNetworkPlugin()
+		if err != nil {
+			return nil, nil, err
+		}
+		utils.Debugf("Using dockernet network plugin")
 	}
-	utils.Debugf("Using dockernet network plugin")
 
 	return containerPlugin, networkPlugin, nil
 }
