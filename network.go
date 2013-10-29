@@ -6,22 +6,19 @@ import (
 	"fmt"
 	"github.com/dotcloud/docker/iptables"
 	"github.com/dotcloud/docker/netlink"
+	"github.com/dotcloud/docker/plugin"
 	"github.com/dotcloud/docker/proxy"
 	"github.com/dotcloud/docker/utils"
 	"log"
 	"net"
 	"strconv"
 	"sync"
-	"syscall"
-	"unsafe"
 )
 
 const (
-	DefaultNetworkBridge = "docker0"
 	DisableNetworkBridge = "none"
 	portRangeStart       = 49153
 	portRangeEnd         = 65535
-	siocBRADDBR          = 0x89a0
 )
 
 // Calculates the first and last IP addresses in an IPNet
@@ -97,7 +94,7 @@ func checkNameserverOverlaps(nameservers []string, dockerNetwork *net.IPNet) err
 // CreateBridgeIface creates a network bridge interface on the host system with the name `ifaceName`,
 // and attempts to configure it with an address which doesn't conflict with any other interface on the host.
 // If it can't find an address which doesn't conflict, it will return an error.
-func CreateBridgeIface(config *DaemonConfig) error {
+func CreateBridgeIface(config *DaemonConfig, networkPlugin plugin.NetworkPlugin) error {
 	addrs := []string{
 		// Here we don't follow the convention of using the 1st IP of the range for the gateway.
 		// This is to use the same gateway IPs as the /24 ranges, which predate the /16 ranges.
@@ -159,50 +156,12 @@ func CreateBridgeIface(config *DaemonConfig) error {
 	if ifaceAddr == "" {
 		return fmt.Errorf("Could not find a free IP address range for interface '%s'. Please configure its address manually and run 'docker -b %s'", config.BridgeIface, config.BridgeIface)
 	}
+
 	utils.Debugf("Creating bridge %s with network %s", config.BridgeIface, ifaceAddr)
-
-	if err := createBridgeIface(config.BridgeIface); err != nil {
+	if err := networkPlugin.CreateBridge(config.BridgeIface, ifaceAddr); err != nil {
 		return err
 	}
-	iface, err := net.InterfaceByName(config.BridgeIface)
-	if err != nil {
-		return err
-	}
-	ipAddr, ipNet, err := net.ParseCIDR(ifaceAddr)
-	if err != nil {
-		return err
-	}
-	if netlink.NetworkLinkAddIp(iface, ipAddr, ipNet); err != nil {
-		return fmt.Errorf("Unable to add private network: %s", err)
-	}
-	if err := netlink.NetworkLinkUp(iface); err != nil {
-		return fmt.Errorf("Unable to start network bridge: %s", err)
-	}
 
-	return nil
-}
-
-// Create the actual bridge device.  This is more backward-compatible than
-// netlink.NetworkLinkAdd and works on RHEL 6.
-func createBridgeIface(name string) error {
-	s, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
-	if err != nil {
-		utils.Debugf("Bridge socket creation failed IPv6 probably not enabled: %v", err)
-		s, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
-		if err != nil {
-			return fmt.Errorf("Error creating bridge creation socket: %s", err)
-		}
-	}
-	defer syscall.Close(s)
-
-	nameBytePtr, err := syscall.BytePtrFromString(name)
-	if err != nil {
-		return fmt.Errorf("Error converting bridge name %s to byte array: %s", name, err)
-	}
-
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(s), siocBRADDBR, uintptr(unsafe.Pointer(nameBytePtr))); err != 0 {
-		return fmt.Errorf("Error creating bridge: %s", err)
-	}
 	return nil
 }
 
@@ -701,7 +660,7 @@ func (manager *NetworkManager) Close() error {
 	return err3
 }
 
-func newNetworkManager(config *DaemonConfig) (*NetworkManager, error) {
+func newNetworkManager(config *DaemonConfig, plugin plugin.NetworkPlugin) (*NetworkManager, error) {
 	if config.BridgeIface == DisableNetworkBridge {
 		manager := &NetworkManager{
 			disabled: true,
@@ -712,7 +671,7 @@ func newNetworkManager(config *DaemonConfig) (*NetworkManager, error) {
 	addr, err := getIfaceAddr(config.BridgeIface)
 	if err != nil {
 		// If the iface is not found, try to create it
-		if err := CreateBridgeIface(config); err != nil {
+		if err := CreateBridgeIface(config, plugin); err != nil {
 			return nil, err
 		}
 		addr, err = getIfaceAddr(config.BridgeIface)
