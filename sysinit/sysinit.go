@@ -39,9 +39,11 @@ func rpcSocketPath() string {
 }
 
 type DockerInitRpc struct {
-	resume   chan int
-	cancel   chan int
-	exitCode chan int
+	resume      chan int
+	cancel      chan int
+	exitCode    chan int
+	process     *os.Process
+	processLock chan struct{}
 }
 
 // RPC: Resume container start or container exit
@@ -64,6 +66,12 @@ func (dockerInitRpc *DockerInitRpc) Wait(_ int, exitCode *int) error {
 		*exitCode = -1
 	}
 	return nil
+}
+
+// RPC: Send a signal to the container app
+func (dockerInitRpc *DockerInitRpc) Signal(signal syscall.Signal, _ *int) error {
+	<-dockerInitRpc.processLock
+	return dockerInitRpc.process.Signal(signal)
 }
 
 // Serve RPC commands over a UNIX socket
@@ -254,9 +262,10 @@ func startServerAndWait(dockerInitRpc *DockerInitRpc) error {
 
 func dockerInitRpcNew() *DockerInitRpc {
 	return &DockerInitRpc{
-		resume:   make(chan int),
-		exitCode: make(chan int),
-		cancel:   make(chan int),
+		resume:      make(chan int),
+		exitCode:    make(chan int),
+		cancel:      make(chan int),
+		processLock: make(chan struct{}),
 	}
 }
 
@@ -306,6 +315,9 @@ func dockerInitApp(args *DockerInitArgs) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
+	dockerInitRpc.process = cmd.Process
+	close(dockerInitRpc.processLock)
 
 	// Forward all signals to the app
 	sigchan := make(chan os.Signal, 1)

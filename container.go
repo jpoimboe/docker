@@ -1357,8 +1357,9 @@ func (container *Container) kill(sig int) error {
 		return nil
 	}
 
-	if output, err := exec.Command("lxc-kill", "-n", container.ID, strconv.Itoa(sig)).CombinedOutput(); err != nil {
-		log.Printf("error killing container %s (%s, %s)", utils.TruncateID(container.ID), output, err)
+	var dummy int
+	if err := container.dockerInitRpcCall("Signal", sig, &dummy); err != nil {
+		log.Printf("error killing container %s (%s)", utils.TruncateID(container.ID), err)
 		return err
 	}
 
@@ -1398,10 +1399,6 @@ func (container *Container) Stop(seconds int) error {
 	// 1. Send a SIGTERM
 	if err := container.kill(15); err != nil {
 		utils.Debugf("Error sending kill SIGTERM: %s", err)
-		log.Print("Failed to send SIGTERM to the process, force killing")
-		if err := container.kill(9); err != nil {
-			return err
-		}
 	}
 
 	// 2. Wait for the process to exit on its own
