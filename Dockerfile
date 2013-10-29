@@ -28,12 +28,9 @@ FROM	ubuntu:12.04
 MAINTAINER	Solomon Hykes <solomon@dotcloud.com>
 
 # Build dependencies
-RUN	echo 'deb http://archive.ubuntu.com/ubuntu precise main universe' > /etc/apt/sources.list
+RUN     echo 'deb http://archive.ubuntu.com/ubuntu precise main universe' > /etc/apt/sources.list
 RUN	apt-get update
-RUN	apt-get install -y -q curl
-RUN	apt-get install -y -q git
-RUN	apt-get install -y -q mercurial
-RUN	apt-get install -y -q build-essential libsqlite3-dev
+RUN	apt-get install -y -q curl git mercurial build-essential libsqlite3-dev
 
 # Install Go
 RUN	curl -s https://go.googlecode.com/files/go1.2.src.tar.gz | tar -v -C /usr/local -xz
@@ -42,19 +39,37 @@ ENV	GOPATH	/go:/go/src/github.com/dotcloud/docker/vendor
 RUN	cd /usr/local/go/src && ./make.bash && go install -ldflags '-w -linkmode external -extldflags "-static -Wl,--unresolved-symbols=ignore-in-shared-libs"' -tags netgo -a std
 
 # Ubuntu stuff
-RUN	apt-get install -y -q ruby1.9.3 rubygems libffi-dev
+RUN	apt-get install -y -q ruby1.9.3 rubygems libffi-dev reprepro dpkg-sig
 RUN	gem install --no-rdoc --no-ri fpm
-RUN	apt-get install -y -q reprepro dpkg-sig
 
 RUN	apt-get install -y -q python-pip
-RUN	pip install s3cmd==1.1.0-beta3
-RUN	pip install python-magic==0.4.6
+RUN	pip install s3cmd==1.1.0-beta3 python-magic==0.4.6
 RUN	/bin/echo -e '[default]\naccess_key=$AWS_ACCESS_KEY\nsecret_key=$AWS_SECRET_KEY\n' > /.s3cfg
 
 # Runtime dependencies
-RUN	apt-get install -y -q iptables
-RUN	apt-get install -y -q lxc
-RUN	apt-get install -y -q aufs-tools
+RUN	apt-get install -y -q iptables lxc aufs-tools
+
+# libvirt - use libvirt from 12.10 because the 12.04 version requires dbus daemon
+RUN     echo 'deb http://archive.ubuntu.com/ubuntu quantal main universe' >> /etc/apt/sources.list
+RUN     echo 'APT::Default-Release "precise";' > /etc/apt/apt.conf.d/01ubuntu
+RUN     /bin/echo -e 'Package: libvirt*\nPin: release n=quantal\nPin-Priority: 990' > /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libnl-3-200\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libnuma1\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: libyajl2\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: *\nPin: release n=precise\nPin-Priority: 900' >> /etc/apt/preferences
+RUN     /bin/echo -e '\nPackage: *\nPin: release o=Ubuntu\nPin-Priority: -10' >> /etc/apt/preferences
+RUN     apt-get update
+RUN     apt-get install -y -q libvirt-dev
+RUN     /bin/echo -e '\nPackage: libnl-route-3-200\nPin: release n=quantal\nPin-Priority: 990' >> /etc/apt/preferences
+RUN     apt-get install -y -q libvirt-bin
+
+# libvirtd hacks
+RUN     mkdir -p /dev/net
+#RUN     mknod /dev/net/tun c 10 200
+RUN     mkdir -p /usr/libexec
+RUN     ln -s /usr/lib/libvirt/libvirt_lxc /usr/libexec/libvirt_lxc
+RUN     echo 'libvirt-dnsmasq:x:1000:1000::/data:/bin/sh' >> /etc/passwd
+RUN     echo 'libvirt-qemu:x:1001:1001::/data:/bin/sh' >> /etc/passwd
 
 # Get lvm2 source for compiling statically
 RUN	git clone https://git.fedorahosted.org/git/lvm2.git /usr/local/lvm2 && cd /usr/local/lvm2 && git checkout v2_02_103

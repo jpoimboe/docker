@@ -203,6 +203,9 @@ func setupNetworking(args *DockerInitArgs) error {
 		if err := netlink.NetworkLinkUp(iface); err != nil {
 			return fmt.Errorf("Unable to set up networking: %v", err)
 		}
+	} else {
+		// FIXME: libvirt hack
+		exec.Command("ip", "link", "delete", "eth0").Run()
 	}
 	if args.gateway != "" {
 		gw := net.ParseIP(args.gateway)
