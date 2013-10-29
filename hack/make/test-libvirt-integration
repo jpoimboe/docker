@@ -1,0 +1,24 @@
+#!/bin/bash
+
+DEST=$1
+INIT=$DEST/../dynbinary/dockerinit-$VERSION
+
+set -e
+
+if [ ! -x "$INIT" ]; then
+	echo >&2 'error: dynbinary must be run before dyntest-integration'
+	false
+fi
+
+if [ ! -e /dev/net/tun ]; then
+	mknod /dev/net/tun c 10 200
+fi
+
+libvirtd &
+trap "kill `pidof libvirtd`" EXIT
+
+(
+	export TEST_DOCKERINIT_PATH="$INIT"
+	export LDFLAGS_STATIC="-X github.com/dotcloud/docker/utils.INITSHA1 \"$DOCKER_INITSHA1\""
+	source "$(dirname "$BASH_SOURCE")/test-integration"
+)
