@@ -33,11 +33,7 @@ func ConfigFromJob(job *engine.Job) *DaemonConfig {
 		config.Dns = dns
 	}
 	config.EnableIptables = job.GetenvBool("EnableIptables")
-	if br := job.Getenv("BridgeIface"); br != "" {
-		config.BridgeIface = br
-	} else {
-		config.BridgeIface = DefaultNetworkBridge
-	}
+	config.BridgeIface = job.Getenv("BridgeIface")
 	config.BridgeIp = job.Getenv("BridgeIp")
 	config.DefaultIp = net.ParseIP(job.Getenv("DefaultIp"))
 	config.InterContainerCommunication = job.GetenvBool("InterContainerCommunication")
