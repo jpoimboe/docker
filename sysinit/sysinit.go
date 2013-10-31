@@ -298,6 +298,30 @@ func setupCapabilities(args *DockerInitArgs) error {
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+// Enable device access for privileged containers when using libvirt-lxc
+func setupCgroups(args *DockerInitArgs) error {
+
+	if !args.privileged {
+		return nil
+	}
+
+	// If using lxc, do nothing.  lxc doesn't mount cgroups fs, which is ok
+	// because lxc.conf already sets up privileged mode cgroup devices
+	// correctly.
+	devicesCgroupPath := "/sys/fs/cgroup/devices"
+	_, err := os.Stat(devicesCgroupPath)
+	if err != nil {
+		return nil
+	}
+
+	// Enable device access for libvirt-lxc
+	allowFile := path.Join(devicesCgroupPath, "devices.allow")
+	ioutil.WriteFile(allowFile, []byte("a *:* rwm"), 0)
+
 	return nil
 }
 
@@ -308,6 +332,10 @@ func setupCommon(args *DockerInitArgs) error {
 		return err
 	}
 	err = setupNetworking(args)
+	if err != nil {
+		return err
+	}
+	err = setupCgroups(args)
 	if err != nil {
 		return err
 	}
