@@ -34,6 +34,11 @@ type Fataler interface {
 	Fatal(args ...interface{})
 }
 
+type KeyValuePair struct {
+	Key   string
+	Value string
+}
+
 // ListOpts type
 type ListOpts []string
 

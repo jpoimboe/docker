@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/dotcloud/docker/archive"
 	"github.com/dotcloud/docker/graphdriver"
+	"github.com/dotcloud/docker/plugin"
 	"github.com/dotcloud/docker/sysinit"
 	"github.com/dotcloud/docker/term"
 	"github.com/dotcloud/docker/utils"
@@ -15,7 +16,6 @@ import (
 	"net"
 	"net/rpc"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"sync"
@@ -50,7 +50,6 @@ type Container struct {
 	Name           string
 	Driver         string
 
-	cmd       *exec.Cmd
 	stdout    *utils.WriteBroadcaster
 	stderr    *utils.WriteBroadcaster
 	stdin     io.ReadCloser
@@ -106,7 +105,7 @@ type Config struct {
 type HostConfig struct {
 	Binds           []string
 	ContainerIDFile string
-	LxcConf         []KeyValuePair
+	LxcConf         []utils.KeyValuePair
 	Privileged      bool
 	PortBindings    map[Port][]PortBinding
 	Links           []string
@@ -126,11 +125,6 @@ var (
 	ErrConflictAttachDetach     = errors.New("Conflicting options: -a and -d")
 	ErrConflictDetachAutoRemove = errors.New("Conflicting options: -rm and -d")
 )
-
-type KeyValuePair struct {
-	Key   string
-	Value string
-}
 
 type PortBinding struct {
 	HostIp   string
@@ -235,10 +229,6 @@ func (container *Container) Inject(file io.Reader, pth string) error {
 	return nil
 }
 
-func (container *Container) Cmd() *exec.Cmd {
-	return container.cmd
-}
-
 func (container *Container) When() time.Time {
 	return container.Created
 }
@@ -299,15 +289,6 @@ func (container *Container) generateEnvConfig(env []string) error {
 	}
 	ioutil.WriteFile(container.EnvConfigPath(), data, 0600)
 	return nil
-}
-
-func (container *Container) generateLXCConfig() error {
-	fo, err := os.Create(container.lxcConfigPath())
-	if err != nil {
-		return err
-	}
-	defer fo.Close()
-	return LxcTemplateCompiled.Execute(fo, container)
 }
 
 func (container *Container) Attach(stdin io.ReadCloser, stdinCloser io.Closer, stdout io.Writer, stderr io.Writer) chan error {
@@ -646,22 +627,7 @@ func (container *Container) Start() (err error) {
 		}
 	}
 
-	if err := container.generateLXCConfig(); err != nil {
-		return err
-	}
-
-	var lxcStart string = "lxc-start"
-	if container.hostConfig.Privileged && container.runtime.capabilities.AppArmor {
-		lxcStart = path.Join(container.runtime.config.Root, "lxc-start-unconfined")
-	}
-
-	params := []string{
-		lxcStart,
-		"-n", container.ID,
-		"-f", container.lxcConfigPath(),
-		"--",
-		"/.dockerinit",
-	}
+	params := []string{}
 
 	// Networking
 	if !container.Config.NetworkDisabled {
@@ -761,24 +727,6 @@ func (container *Container) Start() (err error) {
 	params = append(params, "--", container.Path)
 	params = append(params, container.Args...)
 
-	if RootIsShared() {
-		// lxc-start really needs / to be non-shared, or all kinds of stuff break
-		// when lxc-start unmount things and those unmounts propagate to the main
-		// mount namespace.
-		// What we really want is to clone into a new namespace and then
-		// mount / MS_REC|MS_SLAVE, but since we can't really clone or fork
-		// without exec in go we have to do this horrible shell hack...
-		shellString :=
-			"mount --make-rslave /; exec " +
-				utils.ShellQuoteArguments(params)
-
-		params = []string{
-			"unshare", "-m", "--", "/bin/sh", "-c", shellString,
-		}
-	}
-
-	container.cmd = exec.Command(params[0], params[1:]...)
-
 	// Setup logging of stdout and stderr to disk
 	if err := container.runtime.LogToDisk(container.stdout, container.logPath("json"), "stdout"); err != nil {
 		return err
@@ -787,15 +735,39 @@ func (container *Container) Start() (err error) {
 		return err
 	}
 
-	container.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	// Hook up stdout and stderr to the cmd so that any early error output
-	// that might occur (before hooking up the console FDs) gets logged
-	container.cmd.Stdout = container.stdout
-	container.cmd.Stderr = container.stderr
-
 	// Start it
-	if err := container.cmd.Start(); err != nil {
+	pluginConfig := &plugin.ContainerConfig{
+		ID:              container.ID,
+		Cmd:             "/.dockerinit",
+		Params:          params,
+		LxcConf:         container.hostConfig.LxcConf,
+		SysInitPath:     container.SysInitPath,
+		ResolvConfPath:  container.ResolvConfPath,
+		HostnamePath:    container.HostnamePath,
+		HostsPath:       container.HostsPath,
+		SharedPath:      container.SharedPath,
+		RootPath:        container.root,
+		RootfsPath:      container.RootfsPath(),
+		EnvConfigPath:   container.EnvConfigPath(),
+		Stdout:          container.stdout,
+		Stderr:          container.stderr,
+		NetworkDisabled: container.Config.NetworkDisabled,
+		Privileged:      container.hostConfig.Privileged,
+		Unconfined:      container.hostConfig.Privileged && container.runtime.capabilities.AppArmor,
+		Bridge:          container.NetworkSettings.Bridge,
+		Volumes:         container.Volumes,
+		VolumesRW:       container.VolumesRW,
+		Memory:          container.Config.Memory,
+		CpuShares:       container.Config.CpuShares,
+	}
+
+	if container.Config.MemorySwap == -1 {
+		pluginConfig.MemorySwap = 0
+	} else {
+		pluginConfig.MemorySwap = container.Config.Memory * 2
+	}
+
+	if err := runtime.containerPlugin.Start(pluginConfig); err != nil {
 		return err
 	}
 
@@ -1161,11 +1133,10 @@ func (container *Container) monitor(reconnect bool) {
 	}
 
 	// Wait for dockerinit and lxc-start to die
-	running := true
+	var running bool
 	for startTime := time.Now(); time.Since(startTime) < time.Second; {
-		output, err := exec.Command("lxc-info", "-s", "-n", container.ID).CombinedOutput()
-		if err != nil || !strings.Contains(string(output), "RUNNING") {
-			running = false
+		running, err := container.runtime.containerPlugin.IsRunning(container.ID)
+		if err == nil && !running {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1278,13 +1249,11 @@ func (container *Container) Kill() error {
 		return err
 	}
 
-	// 2. Wait for the process to die, in last resort, try to kill the process directly
+	// 2. Wait for the process to die.  As a last resort, kill dockerinit
+	// itself, which will bring down the rest of the container with it.
 	if err := container.WaitTimeout(10 * time.Second); err != nil {
-		if container.cmd == nil {
-			return fmt.Errorf("lxc-kill failed, impossible to kill the container %s", utils.TruncateID(container.ID))
-		}
-		log.Printf("Container %s failed to exit within 10 seconds of lxc-kill %s - trying direct SIGKILL", "SIGKILL", utils.TruncateID(container.ID))
-		if err := container.cmd.Process.Kill(); err != nil {
+		log.Printf("Container %s failed to exit within 10 seconds of rpc SIGKILL - trying plugin SIGKILL", utils.TruncateID(container.ID))
+		if err := container.runtime.containerPlugin.Kill(container.ID); err != nil {
 			return err
 		}
 	}
@@ -1412,10 +1381,6 @@ func (container *Container) jsonPath() string {
 
 func (container *Container) EnvConfigPath() string {
 	return path.Join(container.root, "config.env")
-}
-
-func (container *Container) lxcConfigPath() string {
-	return path.Join(container.root, "config.lxc")
 }
 
 // This method must be exported to be used from the lxc template

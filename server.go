@@ -581,13 +581,9 @@ func (srv *Server) DockerInfo() *APIInfo {
 	} else {
 		imgcount = len(images)
 	}
-	lxcVersion := ""
-	if output, err := exec.Command("lxc-version").CombinedOutput(); err == nil {
-		outputStr := string(output)
-		if len(strings.SplitN(outputStr, ":", 2)) == 2 {
-			lxcVersion = strings.TrimSpace(strings.SplitN(string(output), ":", 2)[1])
-		}
-	}
+
+	lxcVersion := srv.runtime.containerPlugin.Version()
+
 	kernelVersion := "<unknown>"
 	if kv, err := utils.GetKernelVersion(); err == nil {
 		kernelVersion = kv.String()
@@ -645,9 +641,20 @@ func (srv *Server) ImageHistory(name string) ([]APIHistory, error) {
 
 func (srv *Server) ContainerTop(name, psArgs string) (*APITop, error) {
 	if container := srv.runtime.Get(name); container != nil {
-		output, err := exec.Command("lxc-ps", "--name", container.ID, "--", psArgs).CombinedOutput()
+		pids, err := srv.runtime.containerPlugin.Processes(container.ID)
 		if err != nil {
-			return nil, fmt.Errorf("lxc-ps: %s (%s)", err, output)
+			return nil, fmt.Errorf("Plugin processes error: %s", err)
+		}
+		args := []string{}
+		for i := range pids {
+			args = append(args, fmt.Sprintf("-p%d", pids[i]))
+		}
+		if psArgs != "" {
+			args = append(args, strings.Fields(psArgs)...)
+		}
+		output, err := exec.Command("ps", args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("ps: %s (%s)", err, output)
 		}
 		procs := APITop{}
 		for i, line := range strings.Split(string(output), "\n") {

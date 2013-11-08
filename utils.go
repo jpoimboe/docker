@@ -27,7 +27,6 @@ import (
 	"github.com/dotcloud/docker/namesgenerator"
 	"github.com/dotcloud/docker/utils"
 	"io"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -215,14 +214,14 @@ func MergeConfig(userConf, imageConf *Config) error {
 	return nil
 }
 
-func parseLxcConfOpts(opts utils.ListOpts) ([]KeyValuePair, error) {
-	out := make([]KeyValuePair, len(opts))
+func parseLxcConfOpts(opts utils.ListOpts) ([]utils.KeyValuePair, error) {
+	out := make([]utils.KeyValuePair, len(opts))
 	for i, o := range opts {
 		k, v, err := parseLxcOpt(o)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = KeyValuePair{Key: k, Value: v}
+		out[i] = utils.KeyValuePair{Key: k, Value: v}
 	}
 	return out, nil
 }
@@ -358,20 +357,6 @@ func BtrfsReflink(fd_out, fd_in uintptr) error {
 // name:alias
 func parseLink(rawLink string) (map[string]string, error) {
 	return utils.PartParser("name:alias", rawLink)
-}
-
-func RootIsShared() bool {
-	if data, err := ioutil.ReadFile("/proc/self/mountinfo"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			cols := strings.Split(line, " ")
-			if len(cols) >= 6 && cols[4] == "/" {
-				return strings.HasPrefix(cols[6], "shared")
-			}
-		}
-	}
-
-	// No idea, probably safe to assume so
-	return true
 }
 
 type checker struct {
