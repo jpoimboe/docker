@@ -1,4 +1,4 @@
-package docker
+package lxc
 
 import (
 	"strings"
@@ -6,13 +6,13 @@ import (
 )
 
 const LxcTemplate = `
-{{if .Config.NetworkDisabled}}
+{{if .NetworkDisabled}}
 # network is disabled (-n=false)
 lxc.network.type = empty
 {{else}}
 # network configuration
 lxc.network.type = veth
-lxc.network.link = {{.NetworkSettings.Bridge}}
+lxc.network.link = {{.Bridge}}
 lxc.network.name = eth0
 lxc.network.mtu = 1500
 {{end}}
@@ -37,7 +37,7 @@ lxc.console = none
 # no controlling tty at all
 lxc.tty = 1
 
-{{if (getHostConfig .).Privileged}}
+{{if .Privileged}}
 lxc.cgroup.devices.allow = a 
 {{else}}
 # no implicit access to devices
@@ -101,8 +101,8 @@ lxc.mount.entry = {{escapeFstabSpaces $realPath}} {{escapeFstabSpaces $ROOTFS}}/
 {{end}}
 {{end}}
 
-{{if (getHostConfig .).Privileged}}
-{{if (getCapabilities .).AppArmor}}
+{{if .Privileged}}
+{{if .Unconfined}}
 lxc.aa_profile = unconfined
 {{else}}
 #lxc.aa_profile = unconfined
@@ -110,19 +110,19 @@ lxc.aa_profile = unconfined
 {{end}}
 
 # limits
-{{if .Config.Memory}}
-lxc.cgroup.memory.limit_in_bytes = {{.Config.Memory}}
-lxc.cgroup.memory.soft_limit_in_bytes = {{.Config.Memory}}
-{{with $memSwap := getMemorySwap .Config}}
+{{if .Memory}}
+lxc.cgroup.memory.limit_in_bytes = {{.Memory}}
+lxc.cgroup.memory.soft_limit_in_bytes = {{.Memory}}
+{{with $memSwap := .MemorySwap}}
 lxc.cgroup.memory.memsw.limit_in_bytes = {{$memSwap}}
 {{end}}
 {{end}}
-{{if .Config.CpuShares}}
-lxc.cgroup.cpu.shares = {{.Config.CpuShares}}
+{{if .CpuShares}}
+lxc.cgroup.cpu.shares = {{.CpuShares}}
 {{end}}
 
-{{if (getHostConfig .).LxcConf}}
-{{range $pair := (getHostConfig .).LxcConf}}
+{{if .LxcConf}}
+{{range $pair := .LxcConf}}
 {{$pair.Key}} = {{$pair.Value}}
 {{end}}
 {{end}}
@@ -136,29 +136,9 @@ func escapeFstabSpaces(field string) string {
 	return strings.Replace(field, " ", "\\040", -1)
 }
 
-func getMemorySwap(config *Config) int64 {
-	// By default, MemorySwap is set to twice the size of RAM.
-	// If you want to omit MemorySwap, set it to `-1'.
-	if config.MemorySwap < 0 {
-		return 0
-	}
-	return config.Memory * 2
-}
-
-func getHostConfig(container *Container) *HostConfig {
-	return container.hostConfig
-}
-
-func getCapabilities(container *Container) *Capabilities {
-	return container.runtime.capabilities
-}
-
 func init() {
 	var err error
 	funcMap := template.FuncMap{
-		"getMemorySwap":     getMemorySwap,
-		"getHostConfig":     getHostConfig,
-		"getCapabilities":   getCapabilities,
 		"escapeFstabSpaces": escapeFstabSpaces,
 	}
 	LxcTemplateCompiled, err = template.New("lxc").Funcs(funcMap).Parse(LxcTemplate)
