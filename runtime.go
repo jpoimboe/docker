@@ -187,7 +187,9 @@ func (runtime *Runtime) Register(container *Container) error {
 			}
 
 			container.waitLock = make(chan struct{})
-			go container.monitor()
+			container.rpcLock = make(chan struct{})
+
+			go container.monitor(true)
 		}
 	}
 	return nil
@@ -541,6 +543,11 @@ func (runtime *Runtime) Create(config *Config, name string) (*Container, []strin
 		}
 	} else {
 		container.ResolvConfPath = "/etc/resolv.conf"
+	}
+
+	// Create the shared socket directory
+	if err := os.Mkdir(container.socketPath(), 0700); err != nil {
+		return nil, nil, err
 	}
 
 	// Step 2: save the container json
