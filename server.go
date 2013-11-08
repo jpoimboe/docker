@@ -622,13 +622,9 @@ func (srv *Server) DockerInfo(job *engine.Job) engine.Status {
 	} else {
 		imgcount = len(images)
 	}
-	lxcVersion := ""
-	if output, err := exec.Command("lxc-version").CombinedOutput(); err == nil {
-		outputStr := string(output)
-		if len(strings.SplitN(outputStr, ":", 2)) == 2 {
-			lxcVersion = strings.TrimSpace(strings.SplitN(string(output), ":", 2)[1])
-		}
-	}
+
+	lxcVersion := srv.runtime.containerPlugin.Version()
+
 	kernelVersion := "<unknown>"
 	if kv, err := utils.GetKernelVersion(); err == nil {
 		kernelVersion = kv.String()
@@ -702,10 +698,31 @@ func (srv *Server) ContainerTop(name, psArgs string) (*APITop, error) {
 		if !container.State.IsRunning() {
 			return nil, fmt.Errorf("Container %s is not running", name)
 		}
-		pids, err := utils.GetPidsForContainer(container.ID)
+		rawPids, err := srv.runtime.containerPlugin.Processes(container.ID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Plugin processes error: %s", err)
 		}
+
+		// The .dockerinit process (pid 1) is an implementation detail,
+		// so remove it from the pid list.
+		pids := []int{}
+		for _, pid := range rawPids {
+			comm, err := ioutil.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+			if err != nil {
+				// Ignore any error, the process could have
+				// exited already.
+				utils.Debugf("can't read comm file for pid %d: %s", pid, err)
+				continue
+			}
+			if strings.TrimSpace(string(comm)) == ".dockerinit" {
+				continue
+			}
+			pids = append(pids, pid)
+		}
+		if len(pids) == 0 {
+			return nil, fmt.Errorf("%s doesn't have a dockerinit process", name)
+		}
+
 		if len(psArgs) == 0 {
 			psArgs = "-ef"
 		}
