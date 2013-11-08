@@ -10,12 +10,13 @@ import (
 	_ "github.com/dotcloud/docker/graphdriver/devmapper"
 	_ "github.com/dotcloud/docker/graphdriver/vfs"
 	"github.com/dotcloud/docker/pkg/graphdb"
+	"github.com/dotcloud/docker/plugin"
+	"github.com/dotcloud/docker/plugin/lxc"
 	"github.com/dotcloud/docker/utils"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path"
 	"regexp"
 	"sort"
@@ -43,19 +44,20 @@ type Capabilities struct {
 }
 
 type Runtime struct {
-	repository     string
-	sysInitPath    string
-	containers     *list.List
-	networkManager *NetworkManager
-	graph          *Graph
-	repositories   *TagStore
-	idIndex        *utils.TruncIndex
-	capabilities   *Capabilities
-	volumes        *Graph
-	srv            *Server
-	config         *DaemonConfig
-	containerGraph *graphdb.Database
-	driver         graphdriver.Driver
+	repository      string
+	sysInitPath     string
+	containers      *list.List
+	networkManager  *NetworkManager
+	graph           *Graph
+	repositories    *TagStore
+	idIndex         *utils.TruncIndex
+	capabilities    *Capabilities
+	volumes         *Graph
+	srv             *Server
+	config          *DaemonConfig
+	containerGraph  *graphdb.Database
+	driver          graphdriver.Driver
+	containerPlugin plugin.ContainerPlugin
 }
 
 // List returns an array of all containers registered in the runtime.
@@ -157,11 +159,11 @@ func (runtime *Runtime) Register(container *Container) error {
 	//        if so, then we need to restart monitor and init a new lock
 	// If the container is supposed to be running, make sure of it
 	if container.State.IsRunning() {
-		output, err := exec.Command("lxc-info", "-n", container.ID).CombinedOutput()
+		running, err := runtime.containerPlugin.IsRunning(container.ID)
 		if err != nil {
 			return err
 		}
-		if !strings.Contains(string(output), "RUNNING") {
+		if !running {
 			utils.Debugf("Container %s was supposed to be running but is not.", container.ID)
 			if runtime.config.AutoRestart {
 				utils.Debugf("Restarting")
@@ -683,10 +685,6 @@ func NewRuntimeFromDirectory(config *DaemonConfig) (*Runtime, error) {
 		}
 	}
 
-	utils.Debugf("Escaping AppArmor confinement")
-	if err := linkLxcStart(config.Root); err != nil {
-		return nil, err
-	}
 	utils.Debugf("Creating images graph")
 	g, err := NewGraph(path.Join(config.Root, "graph"), driver)
 	if err != nil {
@@ -743,25 +741,44 @@ func NewRuntimeFromDirectory(config *DaemonConfig) (*Runtime, error) {
 		sysInitPath = localCopy
 	}
 
+	containerPlugin, err := newContainerPlugin()
+	if err != nil {
+		return nil, err
+	}
+
 	runtime := &Runtime{
-		repository:     runtimeRepo,
-		containers:     list.New(),
-		networkManager: netManager,
-		graph:          g,
-		repositories:   repositories,
-		idIndex:        utils.NewTruncIndex(),
-		capabilities:   &Capabilities{},
-		volumes:        volumes,
-		config:         config,
-		containerGraph: graph,
-		driver:         driver,
-		sysInitPath:    sysInitPath,
+		repository:      runtimeRepo,
+		containers:      list.New(),
+		networkManager:  netManager,
+		graph:           g,
+		repositories:    repositories,
+		idIndex:         utils.NewTruncIndex(),
+		capabilities:    &Capabilities{},
+		volumes:         volumes,
+		config:          config,
+		containerGraph:  graph,
+		driver:          driver,
+		sysInitPath:     sysInitPath,
+		containerPlugin: containerPlugin,
 	}
 
 	if err := runtime.restore(); err != nil {
 		return nil, err
 	}
 	return runtime, nil
+}
+
+func newContainerPlugin() (plugin.ContainerPlugin, error) {
+
+	var containerPlugin plugin.ContainerPlugin
+	containerPlugin, err := lxc.NewContainerPlugin()
+	if err != nil {
+		return nil, err
+	}
+
+	utils.Debugf("Using lxc container plugin")
+
+	return containerPlugin, nil
 }
 
 func (runtime *Runtime) Close() error {
@@ -854,23 +871,6 @@ func (runtime *Runtime) Nuke() error {
 	runtime.Close()
 
 	return os.RemoveAll(runtime.config.Root)
-}
-
-func linkLxcStart(root string) error {
-	sourcePath, err := exec.LookPath("lxc-start")
-	if err != nil {
-		return err
-	}
-	targetPath := path.Join(root, "lxc-start-unconfined")
-
-	if _, err := os.Lstat(targetPath); err != nil && !os.IsNotExist(err) {
-		return err
-	} else if err == nil {
-		if err := os.Remove(targetPath); err != nil {
-			return err
-		}
-	}
-	return os.Symlink(sourcePath, targetPath)
 }
 
 // FIXME: this is a convenience function for integration tests
