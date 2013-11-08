@@ -1044,7 +1044,7 @@ func TestEnv(t *testing.T) {
 	goodEnv := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=/",
-		"container=lxc",
+		"container=<plugin specific>",
 		"HOSTNAME=" + utils.TruncateID(container.ID),
 		"FALSE=true",
 		"TRUE=false",
@@ -1057,6 +1057,9 @@ func TestEnv(t *testing.T) {
 		t.Fatalf("Wrong environment: should be %d variables, not: '%s'\n", len(goodEnv), strings.Join(actualEnv, ", "))
 	}
 	for i := range goodEnv {
+		if strings.HasPrefix(actualEnv[i], "container=") && strings.HasPrefix(goodEnv[i], "container=") {
+			continue
+		}
 		if actualEnv[i] != goodEnv[i] {
 			t.Fatalf("Wrong environment variable: should be %s, not %s", goodEnv[i], actualEnv[i])
 		}
