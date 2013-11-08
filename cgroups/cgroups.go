@@ -4,12 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/dotcloud/docker/mount"
-	"github.com/dotcloud/docker/utils"
 	"io"
-	"io/ioutil"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -35,7 +31,7 @@ func FindCgroupMountpoint(subsystem string) (string, error) {
 }
 
 // Returns the relative path to the cgroup docker is running in.
-func getThisCgroupDir(subsystem string) (string, error) {
+func GetThisCgroupDir(subsystem string) (string, error) {
 	f, err := os.Open("/proc/self/cgroup")
 	if err != nil {
 		return "", err
@@ -59,58 +55,4 @@ func parseCgroupFile(subsystem string, r io.Reader) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cgroup '%s' not found in /proc/self/cgroup", subsystem)
-}
-
-// Returns a list of pids for the given container.
-func GetPidsForContainer(id string) ([]int, error) {
-	pids := []int{}
-
-	// memory is chosen randomly, any cgroup used by docker works
-	subsystem := "memory"
-
-	cgroupRoot, err := FindCgroupMountpoint(subsystem)
-	if err != nil {
-		return pids, err
-	}
-
-	cgroupDir, err := getThisCgroupDir(subsystem)
-	if err != nil {
-		return pids, err
-	}
-
-	filename := filepath.Join(cgroupRoot, cgroupDir, id, "tasks")
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		// With more recent lxc versions use, cgroup will be in lxc/
-		filename = filepath.Join(cgroupRoot, cgroupDir, "lxc", id, "tasks")
-	}
-
-	output, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return pids, err
-	}
-	for _, p := range strings.Split(string(output), "\n") {
-		if len(p) == 0 {
-			continue
-		}
-		pid, err := strconv.Atoi(p)
-		if err != nil {
-			return pids, fmt.Errorf("Invalid pid '%s': %s", p, err)
-		}
-
-		// The .dockerinit process (pid 1) is an implementation detail,
-		// so don't add it to the pid list.
-		comm, err := ioutil.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
-		if err != nil {
-			// Ignore any error, the process could have exited
-			// already.
-			utils.Debugf("can't read comm file for pid %d: %s", pid, err)
-			continue
-		}
-		if strings.TrimSpace(string(comm)) == ".dockerinit" {
-			continue
-		}
-
-		pids = append(pids, pid)
-	}
-	return pids, nil
 }
