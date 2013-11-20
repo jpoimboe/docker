@@ -29,6 +29,10 @@ import (
 	"unsafe"
 )
 
+func truncateID(id string) string {
+	return id[0:10]
+}
+
 type LibvirtContainerPlugin struct{}
 
 func NewContainerPlugin() (*LibvirtContainerPlugin, error) {
@@ -101,6 +105,8 @@ func connect() (C.virConnectPtr, error) {
 func (_ *LibvirtContainerPlugin) Start(config *plugin.ContainerConfig) error {
 
 	utils.Debugf("%v: starting container", config.ID)
+
+	config.ID = truncateID(config.ID)
 
 	// Connect to libvirtd
 	conn, err := connect()
@@ -186,6 +192,8 @@ func (_ *LibvirtContainerPlugin) Start(config *plugin.ContainerConfig) error {
 
 func (_ *LibvirtContainerPlugin) Kill(id string) error {
 
+	id = truncateID(id)
+
 	utils.Debugf("%v: killing container", id)
 
 	conn, err := connect()
@@ -212,6 +220,8 @@ func (_ *LibvirtContainerPlugin) Kill(id string) error {
 
 func (_ *LibvirtContainerPlugin) IsRunning(id string) (bool, error) {
 
+	id = truncateID(id)
+
 	conn, err := connect()
 	if err != nil {
 		return false, err
@@ -232,6 +242,8 @@ func (_ *LibvirtContainerPlugin) IsRunning(id string) (bool, error) {
 func (_ *LibvirtContainerPlugin) Processes(id string) ([]int, error) {
 
 	utils.Debugf("%v: getting processes", id)
+
+	id = truncateID(id)
 
 	// Get libvirt_lxc's pid
 	conn, err := connect()
