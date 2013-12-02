@@ -1209,6 +1209,20 @@ func GetPidsForContainer(id string) ([]int, error) {
 		if err != nil {
 			return pids, fmt.Errorf("Invalid pid '%s': %s", p, err)
 		}
+
+		// The .dockerinit process (pid 1) is an implementation detail,
+		// so don't add it to the pid list.
+		comm, err := ioutil.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+		if err != nil {
+			// Ignore any error, the process could have exited
+			// already.
+			Debugf("can't read comm file for pid %d: %s", pid, err)
+			continue
+		}
+		if strings.TrimSpace(string(comm)) == ".dockerinit" {
+			continue
+		}
+
 		pids = append(pids, pid)
 	}
 	return pids, nil
