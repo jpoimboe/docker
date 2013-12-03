@@ -300,6 +300,10 @@ func setupCgroups(args *DockerInitArgs) error {
 
 func setupCommon(args *DockerInitArgs) error {
 
+	// FIXME: Workaround for libvirt "/.oldroot" directory leak
+	// https://bugzilla.redhat.com/show_bug.cgi?id=1026814
+	os.Remove("/.oldroot")
+
 	if err := setupHostname(args); err != nil {
 		return err
 	}
