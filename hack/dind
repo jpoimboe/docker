@@ -59,7 +59,8 @@ do
 	# (respectively "cpu" and "cpuacct") with "-o cpuacct,cpu"
 	# but on a directory called "cpu,cpuacct" (note the inversion
 	# in the order of the groups). This tries to work around it.
-	[ $SUBSYS = cpuacct,cpu ] && ln -s $SUBSYS $CGROUP/cpu,cpuacct
+	[ $SUBSYS = cpuacct,cpu ] && [ ! -e $CGROUP/cpu,cpuacct ] &&
+		ln -s $SUBSYS $CGROUP/cpu,cpuacct
 done
 
 # Note: as I write those lines, the LXC userland tools cannot setup
