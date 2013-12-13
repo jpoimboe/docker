@@ -319,6 +319,10 @@ func startServersAndWait(dockerInitRpc *DockerInitRpc, dockerInitConsole *Docker
 		return fmt.Errorf("timeout waiting for docker Resume()")
 	}
 
+	// Now that our servers have been started, unmount the socket directory
+	// to prevent the container app from trying to impersonate dockerinit.
+	syscall.Unmount(SocketPath, syscall.MNT_DETACH)
+
 	return nil
 }
 
