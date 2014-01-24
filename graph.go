@@ -249,6 +249,7 @@ func setupInitLayer(initLayer string) error {
 		"/proc":            "dir",
 		"/sys":             "dir",
 		"/.dockerinit":     "file",
+		"/.dockersocket":   "dir",
 		"/.dockerenv":      "file",
 		"/etc/resolv.conf": "file",
 		"/etc/hosts":       "file",
