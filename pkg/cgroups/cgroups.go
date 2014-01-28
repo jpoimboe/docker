@@ -37,10 +37,10 @@ func GetThisCgroupDir(subsystem string) (string, error) {
 	}
 	defer f.Close()
 
-	return parseCgroupFile(subsystem, f)
+	return ParseCgroupFile(subsystem, f)
 }
 
-func parseCgroupFile(subsystem string, r io.Reader) (string, error) {
+func ParseCgroupFile(subsystem string, r io.Reader) (string, error) {
 	s := bufio.NewScanner(r)
 
 	for s.Scan() {
