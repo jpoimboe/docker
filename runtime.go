@@ -13,6 +13,7 @@ import (
 	_ "github.com/dotcloud/docker/graphdriver/btrfs"
 	_ "github.com/dotcloud/docker/graphdriver/devmapper"
 	_ "github.com/dotcloud/docker/graphdriver/vfs"
+	_ "github.com/dotcloud/docker/networkdriver/libvirt"
 	_ "github.com/dotcloud/docker/networkdriver/lxc"
 	"github.com/dotcloud/docker/networkdriver/portallocator"
 	"github.com/dotcloud/docker/pkg/graphdb"
@@ -668,7 +669,13 @@ func NewRuntimeFromDirectory(config *DaemonConfig, eng *engine.Engine) (*Runtime
 	}
 
 	if !config.DisableNetwork {
-		job := eng.Job("init_networkdriver")
+		// FIXME: hack -- libvirt exec driver requires libvirt network driver
+		execDriver := os.Getenv("EXEC_DRIVER")
+		networkInit := "init_networkdriver"
+		if execDriver == "libvirt" {
+			networkInit = "init_networkdriver_libvirt"
+		}
+		job := eng.Job(networkInit)
 
 		job.SetenvBool("EnableIptables", config.EnableIptables)
 		job.SetenvBool("InterContainerCommunication", config.InterContainerCommunication)
