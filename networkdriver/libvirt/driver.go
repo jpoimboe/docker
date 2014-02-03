@@ -1,4 +1,7 @@
-package lxc
+// +build linux,dynbinary
+// +build !dockerinit
+
+package libvirt
 
 import (
 	"fmt"
@@ -8,25 +11,31 @@ import (
 	"github.com/dotcloud/docker/networkdriver/portallocator"
 	"github.com/dotcloud/docker/networkdriver/portmapper"
 	"github.com/dotcloud/docker/pkg/iptables"
-	"github.com/dotcloud/docker/pkg/netlink"
+	"github.com/dotcloud/docker/pkg/libvirt"
 	"github.com/dotcloud/docker/utils"
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"strings"
-	"syscall"
-	"unsafe"
 )
 
 const (
-	DefaultNetworkBridge = "docker0"
-	siocBRADDBR          = 0x89a0
+	defaultNetworkName = "docker"
+	defaultBridgeName  = "docker-virbr0"
+	siocBRADDBR        = 0x89a0
 )
 
 // Network interface represents the networking stack of a container
 type networkInterface struct {
 	IP           net.IP
 	PortMappings []net.Addr // there are mappings to the host interfaces
+}
+
+type networkConfig struct {
+	Name       string
+	BridgeName string
+	Address    string
 }
 
 var (
@@ -58,7 +67,7 @@ var (
 )
 
 func init() {
-	if err := engine.Register("init_networkdriver_lxc", InitDriver); err != nil {
+	if err := engine.Register("init_networkdriver_libvirt", InitDriver); err != nil {
 		panic(err)
 	}
 }
@@ -78,7 +87,7 @@ func InitDriver(job *engine.Job) engine.Status {
 
 	bridgeIface = job.Getenv("BridgeIface")
 	if bridgeIface == "" {
-		bridgeIface = DefaultNetworkBridge
+		bridgeIface = defaultBridgeName
 	}
 
 	addr, err := networkdriver.GetIfaceAddr(bridgeIface)
@@ -259,51 +268,86 @@ func createBridge(bridgeIP string) error {
 	}
 	utils.Debugf("Creating bridge %s with network %s", bridgeIface, ifaceAddr)
 
-	if err := createBridgeIface(bridgeIface); err != nil {
+	if err := createBridgeIface(bridgeIface, ifaceAddr); err != nil {
 		return err
 	}
 
-	iface, err := net.InterfaceByName(bridgeIface)
-	if err != nil {
-		return err
-	}
-
-	ipAddr, ipNet, err := net.ParseCIDR(ifaceAddr)
-	if err != nil {
-		return err
-	}
-
-	if netlink.NetworkLinkAddIp(iface, ipAddr, ipNet); err != nil {
-		return fmt.Errorf("Unable to add private network: %s", err)
-	}
-	if err := netlink.NetworkLinkUp(iface); err != nil {
-		return fmt.Errorf("Unable to start network bridge: %s", err)
-	}
 	return nil
 }
 
-// Create the actual bridge device.  This is more backward-compatible than
-// netlink.NetworkLinkAdd and works on RHEL 6.
-func createBridgeIface(name string) error {
-	s, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
+func createBridgeIface(bridge, address string) error {
+	conn, err := libvirt.Connect()
 	if err != nil {
-		utils.Debugf("Bridge socket creation failed IPv6 probably not enabled: %v", err)
-		s, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_IP)
-		if err != nil {
-			return fmt.Errorf("Error creating bridge creation socket: %s", err)
+		return err
+	}
+	defer conn.Close()
+
+	// Remove any previous definition or creation of the network so we're
+	// starting with a clean slate
+	if network, err := conn.NetworkLookupByName(defaultNetworkName); err == nil {
+		defer network.Free()
+		if isActive, err := network.IsActive(); err == nil && isActive {
+			network.Destroy()
 		}
+		network.Undefine()
 	}
-	defer syscall.Close(s)
 
-	nameBytePtr, err := syscall.BytePtrFromString(name)
+	// Generate libvirt network XML file
+	file, err := ioutil.TempFile("/tmp", "docker-libvirt")
 	if err != nil {
-		return fmt.Errorf("Error converting bridge name %s to byte array: %s", name, err)
+		return err
+	}
+	filename := file.Name()
+	defer os.Remove(filename)
+	config := &networkConfig{
+		Name:       defaultNetworkName,
+		BridgeName: bridge,
+		Address:    address,
+	}
+	if err := LibvirtNetworkTemplateCompiled.Execute(file, config); err != nil {
+		file.Close()
+		return err
+	}
+	file.Close()
+
+	// Define network
+	// Currently we use a persistent network because the RHEL 6 version of
+	// libvirt can't deal with a temporary network on libvirtd restart.
+	xml, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	network, err := conn.NetworkDefineXML(string(xml))
+	if err != nil {
+		return err
+	}
+	defer network.Free()
+	if err := network.SetAutostart(false); err != nil {
+		return err
 	}
 
-	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(s), siocBRADDBR, uintptr(unsafe.Pointer(nameBytePtr))); err != 0 {
-		return fmt.Errorf("Error creating bridge: %s", err)
+	// Create the bridge
+	if err := network.Create(); err != nil {
+		return err
 	}
+
 	return nil
+
+}
+
+func getBridgeIface(networkStr string) (string, error) {
+	conn, err := libvirt.Connect()
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	network, err := conn.NetworkLookupByName(networkStr)
+	if err != nil {
+		return "", err
+	}
+
+	return network.GetBridgeName()
 }
 
 // Allocate a network interface
@@ -352,10 +396,6 @@ func Release(job *engine.Job) engine.Status {
 		port               int
 		proto              string
 	)
-
-	if containerInterface == nil {
-		return job.Errorf("No network information to release for %s", id)
-	}
 
 	for _, nat := range containerInterface.PortMappings {
 		if err := portmapper.Unmap(nat); err != nil {

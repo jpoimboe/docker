@@ -13,6 +13,7 @@ import (
 	_ "github.com/dotcloud/docker/graphdriver/btrfs"
 	_ "github.com/dotcloud/docker/graphdriver/devmapper"
 	_ "github.com/dotcloud/docker/graphdriver/vfs"
+	_ "github.com/dotcloud/docker/networkdriver/libvirt"
 	_ "github.com/dotcloud/docker/networkdriver/lxc"
 	"github.com/dotcloud/docker/networkdriver/portallocator"
 	"github.com/dotcloud/docker/pkg/graphdb"
@@ -668,8 +669,17 @@ func NewRuntimeFromDirectory(config *DaemonConfig, eng *engine.Engine) (*Runtime
 	}
 
 	if !config.DisableNetwork {
-		job := eng.Job("init_networkdriver")
+		// libvirt exec driver requires libvirt network driver
+		var networkInit string
+		execDriver := os.Getenv("EXEC_DRIVER")
+		switch execDriver {
+		case "libvirt":
+			networkInit = "init_networkdriver_libvirt"
+		default:
+			networkInit = "init_networkdriver_lxc"
+		}
 
+		job := eng.Job(networkInit)
 		job.SetenvBool("EnableIptables", config.EnableIptables)
 		job.SetenvBool("InterContainerCommunication", config.InterContainerCommunication)
 		job.SetenvBool("EnableIpForward", config.EnableIpForward)
