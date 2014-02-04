@@ -84,7 +84,7 @@ func (d *driver) Kill(p *execdriver.Command, sig int) error {
 	return p.Process.Kill()
 }
 
-func (d *driver) Restore(c *execdriver.Command) error {
+func (d *driver) Restore(c *execdriver.Command) (int, error) {
 	panic("Not Implemented")
 }
 

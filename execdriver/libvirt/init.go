@@ -79,21 +79,47 @@ func (init *DockerInit) GetState(_ int, state *DockerInitState) error {
 }
 
 func (init *DockerInit) SetStdin(fd rpcfd.RpcFd, _ *int) error {
-	syscall.Dup3(int(fd.Fd), syscall.Stdin, syscall.O_CLOEXEC)
-	syscall.Close(int(fd.Fd))
+	if err := syscall.Dup3(int(fd.Fd), syscall.Stdin, syscall.O_CLOEXEC); err != nil {
+		return err
+	}
+	if err := syscall.Close(int(fd.Fd)); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (init *DockerInit) SetStdout(fd rpcfd.RpcFd, _ *int) error {
-	syscall.Dup3(int(fd.Fd), syscall.Stdout, syscall.O_CLOEXEC)
-	syscall.Close(int(fd.Fd))
-
+	if err := syscall.Dup3(int(fd.Fd), syscall.Stdout, syscall.O_CLOEXEC); err != nil {
+		return err
+	}
+	if err := syscall.Close(int(fd.Fd)); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (init *DockerInit) SetStderr(fd rpcfd.RpcFd, _ *int) error {
-	syscall.Dup3(int(fd.Fd), syscall.Stderr, syscall.O_CLOEXEC)
-	syscall.Close(int(fd.Fd))
+	if err := syscall.Dup3(int(fd.Fd), syscall.Stderr, syscall.O_CLOEXEC); err != nil {
+		return err
+	}
+	if err := syscall.Close(int(fd.Fd)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (init *DockerInit) GetStdin(_ int, fd *rpcfd.RpcFd) error {
+	fd.Fd = 0
+	return nil
+}
+
+func (init *DockerInit) GetStdout(_ int, fd *rpcfd.RpcFd) error {
+	fd.Fd = 1
+	return nil
+}
+
+func (init *DockerInit) GetStderr(_ int, fd *rpcfd.RpcFd) error {
+	fd.Fd = 2
 	return nil
 }
 

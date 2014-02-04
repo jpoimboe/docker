@@ -197,6 +197,33 @@ func (init *dockerInit) SetStderr(w io.Writer) error {
 	return init.SetWriter("SetStderr", w)
 }
 
+func (init *dockerInit) GetStdin() (io.Reader, error) {
+	var fd rpcfd.RpcFd
+	var dummy int
+	if err := init.Call("GetStdin", &dummy, &fd); err != nil {
+		return nil, err
+	}
+	return os.NewFile(fd.Fd, "stdin"), nil
+}
+
+func (init *dockerInit) GetStdout() (io.Writer, error) {
+	var fd rpcfd.RpcFd
+	var dummy int
+	if err := init.Call("GetStdout", &dummy, &fd); err != nil {
+		return nil, err
+	}
+	return os.NewFile(fd.Fd, "stdout"), nil
+}
+
+func (init *dockerInit) GetStderr() (io.Writer, error) {
+	var fd rpcfd.RpcFd
+	var dummy int
+	if err := init.Call("GetStderr", &dummy, &fd); err != nil {
+		return nil, err
+	}
+	return os.NewFile(fd.Fd, "stderr"), nil
+}
+
 func (init *dockerInit) Signal(signal syscall.Signal) error {
 	var dummy1 int
 	if err := init.Call("Signal", &signal, &dummy1); err != nil {
@@ -224,8 +251,84 @@ func (init *dockerInit) close() {
 	}
 }
 
+func (init *dockerInit) wait(c *execdriver.Command, startCallback execdriver.StartCallback, reconnect bool) (int, error) {
+	state, err := init.GetState()
+	if err != nil {
+		return -1, err
+	}
+
+	consoleConnected := false
+
+	for {
+		switch state.State {
+		case Initial:
+			if c.Stdin != nil {
+				if err := init.SetStdin(c.Stdin); err != nil {
+					return -1, err
+				}
+			}
+			if err := init.SetStdout(c.Stdout); err != nil {
+				return -1, err
+			}
+			if err := init.SetStderr(c.Stderr); err != nil {
+				return -1, err
+			}
+			consoleConnected = true
+
+			if err := init.Resume(); err != nil {
+				return -1, err
+			}
+
+		case Running:
+			if reconnect && !consoleConnected {
+				c.Stdin, err = init.GetStdin()
+				if err != nil {
+					return -1, err
+				}
+				c.Stdout, err = init.GetStdout()
+				if err != nil {
+					return -1, err
+				}
+				c.Stderr, err = init.GetStderr()
+				if err != nil {
+					return -1, err
+				}
+				// FIXME: fix console, logging
+				consoleConnected = true
+			}
+			if startCallback != nil {
+				startCallback(c)
+			}
+			// Just, wait!
+			// TODO: Need initlock?
+
+		case Exited:
+			// Tell dockerinit it can die
+			init.Resume()
+
+			return state.ExitCode, nil
+
+		case FailedToStart:
+			// Tell dockerinit it can die
+			init.Resume()
+
+			return -1, errors.New(state.Error)
+
+		default:
+			return -1, fmt.Errorf("Container is in an unknown state")
+		}
+
+		state, err = init.WaitForStateChange(state.State)
+		if err != nil {
+			return -1, err
+		}
+	}
+
+	panic("Unreachable")
+}
+
 // Connect to the dockerinit RPC socket
-func connectToDockerInit(c *execdriver.Command) (*dockerInit, error) {
+func connectToDockerInit(c *execdriver.Command, reconnect bool) (*dockerInit, error) {
 	// We can't connect to the dockerinit RPC socket file directly because
 	// the path to it is longer than 108 characters (UNIX_PATH_MAX).
 	// Create a temporary symlink to connect to.
@@ -249,6 +352,10 @@ func connectToDockerInit(c *execdriver.Command) (*dockerInit, error) {
 			init.rpc = rpcfd.NewClient(init.socket)
 			break
 		}
+
+		if reconnect {
+			return nil, fmt.Errorf("container is no longer running")
+		}
 	}
 
 	if err != nil {
@@ -256,6 +363,16 @@ func connectToDockerInit(c *execdriver.Command) (*dockerInit, error) {
 	}
 
 	close(init.rpcLock)
+
+	pid, err := init.GetPid()
+	if err != nil {
+		return nil, err
+	}
+
+	c.Process, err = os.FindProcess(pid)
+	if err != nil {
+		return nil, err
+	}
 
 	return init, nil
 }
@@ -362,64 +479,13 @@ func (d *driver) Run(c *execdriver.Command, startCallback execdriver.StartCallba
 	}
 	defer domain.Free()
 
-	init, err := connectToDockerInit(c)
+	init, err := connectToDockerInit(c, false)
 	if err != nil {
 		return -1, err
 	}
 	defer init.close()
 
-	pid, err := init.GetPid()
-	c.Process, err = os.FindProcess(pid)
-	if err != nil {
-		return -1, err
-	}
-
-	state, err := init.GetState()
-	if err != nil {
-		return -1, err
-	}
-
-	for {
-		switch state.State {
-		case Initial:
-			if c.Stdin != nil {
-				init.SetStdin(c.Stdin)
-			}
-			init.SetStdout(c.Stdout)
-			init.SetStderr(c.Stderr)
-
-			init.Resume()
-
-		case Running:
-			if startCallback != nil {
-				startCallback(c)
-			}
-			// Just, wait!
-			// TODO: Need initlock?
-
-		case Exited:
-			// Tell dockerinit it can die
-			init.Resume()
-
-			return state.ExitCode, nil
-
-		case FailedToStart:
-			// Tell dockerinit it can die
-			init.Resume()
-
-			return -1, errors.New(state.Error)
-
-		default:
-			return -1, fmt.Errorf("Container is in an unknown state")
-		}
-
-		state, err = init.WaitForStateChange(state.State)
-		if err != nil {
-			return -1, err
-		}
-	}
-
-	panic("Unreachable")
+	return init.wait(c, startCallback, false)
 }
 
 func (d *driver) Kill(c *execdriver.Command, sig int) error {
@@ -442,12 +508,14 @@ func (d *driver) Kill(c *execdriver.Command, sig int) error {
 	return domain.Destroy()
 }
 
-func (d *driver) Restore(c *execdriver.Command) error {
-	// TODO: Implement this
-	for {
-		// Wait forever for now
-		time.Sleep(500 * time.Millisecond)
+func (d *driver) Restore(c *execdriver.Command) (int, error) {
+	init, err := connectToDockerInit(c, true)
+	if err != nil {
+		return -1, err
 	}
+	defer init.close()
+
+	return init.wait(c, nil, true)
 }
 
 type info struct {
