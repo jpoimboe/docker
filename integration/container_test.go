@@ -1044,7 +1044,6 @@ func TestEnv(t *testing.T) {
 	goodEnv := []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=/",
-		"container=lxc",
 		"HOSTNAME=" + utils.TruncateID(container.ID),
 		"FALSE=true",
 		"TRUE=false",
@@ -1052,6 +1051,19 @@ func TestEnv(t *testing.T) {
 		"cky",
 		"",
 	}
+
+	/* container variable is specific to the execution driver */
+	var containerEnv string
+	driverName := runtime.ExecDriverName()
+	if strings.HasPrefix(driverName, "lxc") {
+		containerEnv = "lxc"
+	} else if strings.HasPrefix(driverName, "libvirt") {
+		containerEnv = "lxc-libvirt"
+	} else {
+		t.Fatalf("unsupported execution backend %s", driverName)
+	}
+	goodEnv = append(goodEnv, "container="+containerEnv)
+
 	sort.Strings(goodEnv)
 	if len(goodEnv) != len(actualEnv) {
 		t.Fatalf("Wrong environment: should be %d variables, not: '%s'\n", len(goodEnv), strings.Join(actualEnv, ", "))
