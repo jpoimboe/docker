@@ -802,14 +802,6 @@ func (container *Container) Start() (err error) {
 	callbackLock := make(chan struct{})
 	callback := func(command *execdriver.Command) {
 		container.State.SetRunning(command.Pid())
-		if command.Tty {
-			// The callback is called after the process Start()
-			// so we are in the parent process. In TTY mode, stdin/out/err is the PtySlace
-			// which we close here.
-			if c, ok := command.Stdout.(io.Closer); ok {
-				c.Close()
-			}
-		}
 		if err := container.ToDisk(); err != nil {
 			utils.Debugf("%s", err)
 		}

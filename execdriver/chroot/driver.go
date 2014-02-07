@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/dotcloud/docker/execdriver"
 	"github.com/dotcloud/docker/pkg/mount"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -61,6 +62,14 @@ func (d *driver) Run(c *execdriver.Command, startCallback execdriver.StartCallba
 
 	if err := c.Start(); err != nil {
 		return -1, err
+	}
+
+	// In tty mode we can close the pty slave, as the child process owns it
+	// now.
+	if c.Tty {
+		if ptySlave, ok := c.Stdout.(io.Closer); ok {
+			ptySlave.Close()
+		}
 	}
 
 	if startCallback != nil {

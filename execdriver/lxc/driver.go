@@ -5,6 +5,7 @@ import (
 	"github.com/dotcloud/docker/execdriver"
 	"github.com/dotcloud/docker/pkg/cgroups"
 	"github.com/dotcloud/docker/utils"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -165,6 +166,14 @@ func (d *driver) Run(c *execdriver.Command, startCallback execdriver.StartCallba
 	// Poll lxc for RUNNING status
 	if err := d.waitForStart(c, waitLock); err != nil {
 		return -1, err
+	}
+
+	// In tty mode we can close the pty slave, as the child process owns it
+	// now.
+	if c.Tty {
+		if ptySlave, ok := c.Stdout.(io.Closer); ok {
+			ptySlave.Close()
+		}
 	}
 
 	if startCallback != nil {
