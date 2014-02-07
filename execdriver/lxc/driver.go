@@ -198,14 +198,14 @@ func (d *driver) Kill(c *execdriver.Command, sig int) error {
 	return d.kill(c, sig)
 }
 
-func (d *driver) Restore(c *execdriver.Command) error {
+func (d *driver) Restore(c *execdriver.Command) (int, error) {
 	for {
 		output, err := exec.Command("lxc-info", "-n", c.ID).CombinedOutput()
 		if err != nil {
-			return err
+			return -1, err
 		}
 		if !strings.Contains(string(output), "RUNNING") {
-			return nil
+			return -1, nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
