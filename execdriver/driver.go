@@ -44,6 +44,8 @@ type InitArgs struct {
 	Gateway    string
 	Ip         string
 	WorkDir    string
+	Tty        bool
+	OpenStdin  bool
 	Privileged bool
 	Env        []string
 	Args       []string

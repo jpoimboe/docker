@@ -56,6 +56,8 @@ func SysInit() {
 		gateway    = flag.String("g", "", "gateway address")
 		ip         = flag.String("i", "", "ip address")
 		workDir    = flag.String("w", "", "workdir")
+		tty        = flag.Bool("tty", false, "tty")
+		openStdin  = flag.Bool("openstdin", false, "open stdin")
 		privileged = flag.Bool("privileged", false, "privileged mode")
 		mtu        = flag.Int("mtu", 1500, "interface mtu")
 		driver     = flag.String("driver", "", "exec driver")
@@ -80,6 +82,8 @@ func SysInit() {
 		Gateway:    *gateway,
 		Ip:         *ip,
 		WorkDir:    *workDir,
+		Tty:        *tty,
+		OpenStdin:  *openStdin,
 		Privileged: *privileged,
 		Env:        env,
 		Args:       flag.Args(),
