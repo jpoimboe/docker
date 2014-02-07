@@ -7,6 +7,7 @@ import (
 	"github.com/dotcloud/docker/engine"
 	"github.com/dotcloud/docker/execdriver"
 	"github.com/dotcloud/docker/execdriver/chroot"
+	"github.com/dotcloud/docker/execdriver/libvirt"
 	"github.com/dotcloud/docker/execdriver/lxc"
 	"github.com/dotcloud/docker/graphdriver"
 	"github.com/dotcloud/docker/graphdriver/aufs"
@@ -723,19 +724,23 @@ func NewRuntimeFromDirectory(config *DaemonConfig, eng *engine.Engine) (*Runtime
 	/*
 		temporarilly disabled.
 	*/
-	if false {
-		var ed execdriver.Driver
-		if driver := os.Getenv("EXEC_DRIVER"); driver == "lxc" {
-			ed, err = lxc.NewDriver(config.Root, sysInfo.AppArmor)
-		} else {
-			ed, err = chroot.NewDriver()
-		}
-		if ed != nil {
-		}
+	var ed execdriver.Driver
+	d := os.Getenv("EXEC_DRIVER")
+	if d == "" {
+		d = "lxc"
 	}
-	ed, err := lxc.NewDriver(config.Root, sysInfo.AppArmor)
-	if err != nil {
-		return nil, err
+	switch d {
+	case "lxc":
+		ed, err = lxc.NewDriver(config.Root, sysInfo.AppArmor)
+	case "libvirt":
+		ed, err = libvirt.NewDriver(config.Root)
+	case "chroot":
+		ed, err = chroot.NewDriver()
+	default:
+		err = fmt.Errorf("No such driver")
+	}
+	if ed == nil {
+		return nil, fmt.Errorf("Couldn't initialize exec driver %s: %s", d, err)
 	}
 
 	runtime := &Runtime{

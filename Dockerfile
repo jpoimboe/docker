@@ -85,6 +85,16 @@ RUN	/bin/echo -e '[default]\naccess_key=$AWS_ACCESS_KEY\nsecret_key=$AWS_SECRET_
 # Set user.email so crosbymichael's in-container merge commits go smoothly
 RUN	git config --global user.email 'docker-dummy@example.com'
 
+# libvirt
+RUN     apt-get install -y -q libvirt-dev libvirt-bin
+RUN     rm -f /usr/lib/libvirt/connection-driver/libvirt_driver_nwfilter.so
+
+# libvirtd hacks
+RUN     mkdir -p /dev/net
+#RUN     mknod /dev/net/tun c 10 200
+RUN     mkdir -p /usr/libexec
+RUN     ln -s /usr/lib/libvirt/libvirt_lxc /usr/libexec/libvirt_lxc
+
 VOLUME	/var/lib/docker
 WORKDIR	/go/src/github.com/dotcloud/docker
 

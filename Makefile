@@ -28,6 +28,9 @@ test: build
 test-integration: build
 	$(DOCKER_RUN_DOCKER) hack/make.sh test-integration
 
+test-libvirt: build
+	$(DOCKER_RUN_DOCKER) hack/make.sh libvirtd dynbinary dyntest dyntest-integration
+
 shell: build
 	$(DOCKER_RUN_DOCKER) bash
 
